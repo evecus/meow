@@ -1,0 +1,68 @@
+name: Coverage
+
+on:
+  schedule:
+    # Nightly at 02:17 UTC — offset to avoid shared runner load at top of hour.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: coverage
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache ssserver binary
+        id: cache-ssserver
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/ssserver
+          key: ssserver-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install ssserver
+        if: steps.cache-ssserver.outputs.cache-hit != 'true'
+        run: cargo install shadowsocks-rust --features "stream-cipher aead-cipher-2022" --locked
+
+      - name: Install simple-obfs
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends simple-obfs
+
+      - name: Collect coverage
+        env:
+          MIHOMO_REQUIRE_INTEGRATION_BINS: "1"
+        run: |
+          # `--include-ignored` runs local-process integration tests (ssserver,
+          # simple-obfs, embedded mock servers). Tests in
+          # crates/meow-dns/tests/doh_dot_integration.rs require outbound
+          # internet (Cloudflare/Google DoH/DoT) and are not reachable from
+          # GitHub-hosted runners — skip them by name.
+          cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info \
+            -- --include-ignored \
+               --skip dot_resolves_example_com \
+               --skip doh_resolves_example_com \
+               --skip dot_bogus_sni_fails_cert_validation \
+               --skip doh_bogus_sni_fails_cert_validation \
+               --skip dot_hostname_with_bootstrap_resolves
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

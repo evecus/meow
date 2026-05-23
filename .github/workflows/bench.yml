@@ -1,0 +1,59 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Steady-state duration per workload (seconds)"
+        required: false
+        default: "30"
+      go_binary:
+        description: "Path to Go mihomo binary on the runner (leave empty to download latest)"
+        required: false
+        default: ""
+
+jobs:
+  bench:
+    name: Run benchmark harness
+    runs-on: [self-hosted, bench]
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: bench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: bench-${{ runner.os }}-
+
+      - name: Build release binaries
+        run: cargo build --release -p meow-app -p meow-bench
+
+      - name: Run benchmark harness
+        env:
+          DURATION: ${{ github.event.inputs.duration }}
+          GO_BINARY: ${{ github.event.inputs.go_binary }}
+        run: bash bench.sh
+
+      - name: Check regression vs baseline
+        if: hashFiles('docs/benchmarks/baseline-*.json') != ''
+        run: |
+          BASELINE=$(ls docs/benchmarks/baseline-*.json | sort | tail -1)
+          python3 bench/compare.py "$BASELINE" target/bench/results.json
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results-${{ github.run_id }}
+          path: |
+            target/bench/results.json
+          retention-days: 90

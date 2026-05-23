@@ -1,0 +1,159 @@
+use crate::metadata::Metadata;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RuleType {
+    Domain,
+    DomainSuffix,
+    DomainKeyword,
+    DomainRegex,
+    GeoSite,
+    GeoIp,
+    SrcGeoIp,
+    IpCidr,
+    SrcIpCidr,
+    SrcPort,
+    DstPort,
+    InPort,
+    Dscp,
+    ProcessName,
+    ProcessPath,
+    Network,
+    Uid,
+    Match,
+    RuleSet,
+    And,
+    Or,
+    Not,
+    DomainWildcard,
+    IpSuffix,
+    IpAsn,
+    SubRule,
+    InName,
+    InType,
+    InUser,
+}
+
+impl RuleType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleType::Domain => "DOMAIN",
+            RuleType::DomainSuffix => "DOMAIN-SUFFIX",
+            RuleType::DomainKeyword => "DOMAIN-KEYWORD",
+            RuleType::DomainRegex => "DOMAIN-REGEX",
+            RuleType::GeoSite => "GEOSITE",
+            RuleType::GeoIp => "GEOIP",
+            RuleType::SrcGeoIp => "SRC-GEOIP",
+            RuleType::IpCidr => "IP-CIDR",
+            RuleType::SrcIpCidr => "SRC-IP-CIDR",
+            RuleType::SrcPort => "SRC-PORT",
+            RuleType::DstPort => "DST-PORT",
+            RuleType::InPort => "IN-PORT",
+            RuleType::Dscp => "DSCP",
+            RuleType::ProcessName => "PROCESS-NAME",
+            RuleType::ProcessPath => "PROCESS-PATH",
+            RuleType::Network => "NETWORK",
+            RuleType::Uid => "UID",
+            RuleType::Match => "MATCH",
+            RuleType::RuleSet => "RULE-SET",
+            RuleType::And => "AND",
+            RuleType::Or => "OR",
+            RuleType::Not => "NOT",
+            RuleType::DomainWildcard => "DOMAIN-WILDCARD",
+            RuleType::IpSuffix => "IP-SUFFIX",
+            RuleType::IpAsn => "IP-ASN",
+            RuleType::SubRule => "SUB-RULE",
+            RuleType::InName => "IN-NAME",
+            RuleType::InType => "IN-TYPE",
+            RuleType::InUser => "IN-USER",
+        }
+    }
+}
+
+impl fmt::Display for RuleType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RuleType::Domain => write!(f, "DOMAIN"),
+            RuleType::DomainSuffix => write!(f, "DOMAIN-SUFFIX"),
+            RuleType::DomainKeyword => write!(f, "DOMAIN-KEYWORD"),
+            RuleType::DomainRegex => write!(f, "DOMAIN-REGEX"),
+            RuleType::GeoSite => write!(f, "GEOSITE"),
+            RuleType::GeoIp => write!(f, "GEOIP"),
+            RuleType::SrcGeoIp => write!(f, "SRC-GEOIP"),
+            RuleType::IpCidr => write!(f, "IP-CIDR"),
+            RuleType::SrcIpCidr => write!(f, "SRC-IP-CIDR"),
+            RuleType::SrcPort => write!(f, "SRC-PORT"),
+            RuleType::DstPort => write!(f, "DST-PORT"),
+            RuleType::InPort => write!(f, "IN-PORT"),
+            RuleType::Dscp => write!(f, "DSCP"),
+            RuleType::ProcessName => write!(f, "PROCESS-NAME"),
+            RuleType::ProcessPath => write!(f, "PROCESS-PATH"),
+            RuleType::Network => write!(f, "NETWORK"),
+            RuleType::Uid => write!(f, "UID"),
+            RuleType::Match => write!(f, "MATCH"),
+            RuleType::RuleSet => write!(f, "RULE-SET"),
+            RuleType::And => write!(f, "AND"),
+            RuleType::Or => write!(f, "OR"),
+            RuleType::Not => write!(f, "NOT"),
+            RuleType::DomainWildcard => write!(f, "DOMAIN-WILDCARD"),
+            RuleType::IpSuffix => write!(f, "IP-SUFFIX"),
+            RuleType::IpAsn => write!(f, "IP-ASN"),
+            RuleType::SubRule => write!(f, "SUB-RULE"),
+            RuleType::InName => write!(f, "IN-NAME"),
+            RuleType::InType => write!(f, "IN-TYPE"),
+            RuleType::InUser => write!(f, "IN-USER"),
+        }
+    }
+}
+
+/// Helper passed to `Rule::match_metadata`. Historically this carried a
+/// platform-specific `find_process` closure, but process lookup is now
+/// performed once per dispatch in the tunnel match engine (which populates
+/// `Metadata.process` / `process_path` / `uid` before rule iteration). The
+/// struct is kept as an empty marker so the `Rule` trait signature can grow
+/// future per-match context (e.g. shared regex cache) without touching every
+/// call site again.
+#[derive(Default)]
+pub struct RuleMatchHelper;
+
+pub trait Rule: Send + Sync {
+    fn rule_type(&self) -> RuleType;
+    fn match_metadata(&self, metadata: &Metadata, helper: &RuleMatchHelper) -> bool;
+    fn adapter(&self) -> &str;
+    fn payload(&self) -> &str;
+    fn should_resolve_ip(&self) -> bool {
+        false
+    }
+    fn should_find_process(&self) -> bool {
+        false
+    }
+
+    /// Match against metadata and, on match, return the routing target.
+    ///
+    /// Default: `Some(SmolStr::from(self.adapter()))` when `match_metadata`
+    /// returns true, else `None`. Override only when the resolved target
+    /// must come from some other source — notably `SUB-RULE`, whose
+    /// target is the matched inner rule's adapter rather than any field
+    /// stored on the outer rule.
+    ///
+    /// Returns `SmolStr` rather than `String` to avoid a heap allocation
+    /// per matched connection: adapter names ≤23 bytes (the common case
+    /// for `DIRECT`, `REJECT`, and most user-named proxies) inline into
+    /// the SmolStr struct. This is HP-3 in ADR-0008.
+    ///
+    /// upstream: `rules/logic/logic.go::matchSubRules` — returns
+    /// `(bool, adapter)` from the inner rule, not from the SUB-RULE
+    /// wrapper.
+    fn match_and_resolve(
+        &self,
+        metadata: &Metadata,
+        helper: &RuleMatchHelper,
+    ) -> Option<smol_str::SmolStr> {
+        if self.match_metadata(metadata, helper) {
+            Some(smol_str::SmolStr::from(self.adapter()))
+        } else {
+            None
+        }
+    }
+}

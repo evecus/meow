@@ -1,0 +1,30 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Weekly, Mondays 03:17 UTC — offset so we're not sharing the top-of-hour load.
+    - cron: "17 3 * * 1"
+  push:
+    paths:
+      - "Cargo.lock"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - ".github/workflows/audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  checks: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

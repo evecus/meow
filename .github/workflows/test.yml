@@ -1,0 +1,263 @@
+name: Test
+
+on:
+  push:
+    paths: ["crates/**", "tests/**", "Cargo.toml", "Cargo.lock", ".github/workflows/**"]
+  pull_request:
+    paths: ["crates/**", "tests/**", "Cargo.toml", "Cargo.lock", ".github/workflows/**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Clippy (no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      - name: Doc check
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Cache ssserver binary
+        id: cache-ssserver
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/ssserver
+          key: ssserver-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install ssserver
+        if: steps.cache-ssserver.outputs.cache-hit != 'true'
+        run: cargo install shadowsocks-rust --features "stream-cipher aead-cipher-2022" --locked
+
+      - name: Install simple-obfs (obfs-local / obfs-server)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends simple-obfs
+          # Fail fast if either binary is missing — the obfs integration tests
+          # rely on both being on PATH (otherwise they would silently SKIP).
+          command -v obfs-local
+          command -v obfs-server
+
+      - name: Build
+        run: cargo build --tests
+
+      - name: Unit tests
+        run: cargo test --lib
+
+      - name: Common types tests
+        run: cargo test --test common_test -- --nocapture
+
+      - name: DNS cache tests
+        run: cargo test --test dns_cache_test -- --nocapture
+
+      - name: DNS upstream unit tests (DoH/DoT parser + bootstrap)
+        run: cargo test -p meow-dns --lib -- --nocapture
+
+      - name: Config parsing tests
+        run: cargo test --test config_test -- --nocapture
+
+      - name: Statistics tests
+        run: cargo test --test statistics_test -- --nocapture
+
+      - name: Rules tests
+        run: cargo test --test rules_test -- --nocapture
+
+      - name: Shadowsocks integration tests (incl. simple-obfs)
+        env:
+          # Force-fail (instead of silently SKIP) if ssserver / obfs-local /
+          # obfs-server are missing on PATH — they are installed above.
+          MIHOMO_REQUIRE_INTEGRATION_BINS: "1"
+        run: cargo test --test shadowsocks_integration -- --nocapture
+
+      - name: API integration tests
+        run: cargo test --test api_test -- --nocapture
+
+      - name: Config persistence tests
+        run: cargo test --test config_persistence_test -- --nocapture
+
+      - name: Systemd config tests
+        run: cargo test -p meow-app --test systemd_config_test -- --nocapture
+
+      - name: Trojan integration tests
+        run: cargo test --test trojan_integration -- --nocapture
+
+      - name: v2ray-plugin integration tests
+        run: cargo test --test v2ray_plugin_integration -- --nocapture
+
+      - name: DNS pre-resolve tests
+        run: cargo test --test pre_resolve_test -- --nocapture
+
+      - name: Transport TLS tests
+        run: cargo test -p meow-transport --test tls_test -- --nocapture
+
+      - name: Transport WS tests
+        run: cargo test -p meow-transport --test ws_test -- --nocapture
+
+      - name: Transport gRPC tests
+        run: cargo test -p meow-transport --test grpc_test --features grpc -- --nocapture
+
+      - name: Transport H2 tests
+        run: cargo test -p meow-transport --test h2_test --features h2 -- --nocapture
+
+      - name: Transport HTTPUpgrade tests
+        run: cargo test -p meow-transport --test httpupgrade_test --features httpupgrade -- --nocapture
+
+      - name: Transport crate invariants
+        run: cargo test -p meow-transport --test crate_invariants_test -- --nocapture
+
+      - name: Transport feature matrix (G1-G7)
+        run: |
+          cargo check -p meow-transport --no-default-features
+          cargo check -p meow-transport --no-default-features --features "tls"
+          cargo check -p meow-transport --no-default-features --features "tls,ws"
+          cargo check -p meow-transport --no-default-features --features "grpc"
+          cargo check -p meow-transport --no-default-features --features "h2"
+          cargo check -p meow-transport --no-default-features --features "httpupgrade"
+          cargo check -p meow-transport --all-features
+
+      - name: VLESS config parser tests
+        run: cargo test -p meow-config --test vless_config_test -- --nocapture
+
+      - name: VLESS integration tests
+        run: cargo test --test vless_integration -- --nocapture
+
+      - name: VLESS feature matrix (G1-G4)
+        run: |
+          # G1: plain vless, no Vision — vision.rs excluded
+          cargo check -p meow-proxy --no-default-features --features vless
+          # G2: vless + Vision
+          cargo check -p meow-proxy --no-default-features --features "vless,vless-vision"
+          # G3: all proxy features (default)
+          cargo check -p meow-proxy --all-features
+          # G4: vless-vision feature requires vless (transitive dep check)
+          cargo check -p meow-proxy --no-default-features --features "vless-vision"
+
+      - name: DNS encrypted feature matrix (D1-D3)
+        run: |
+          # D1: plain UDP/TCP only, no encrypted features
+          cargo check -p meow-dns --no-default-features
+          # D2: explicitly enable encrypted features
+          cargo check -p meow-dns --no-default-features --features encrypted
+          # D3: default features (= encrypted on)
+          cargo check -p meow-dns
+
+  features:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: features
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - name: Feature powerset — meow-transport
+        # boring-tls excluded: requires C++ toolchain at build time; tested via
+        # --all-features in the transport feature matrix step in the test job.
+        run: cargo hack check -p meow-transport --feature-powerset --exclude-features boring-tls
+
+      - name: Feature powerset — meow-proxy
+        run: cargo hack check -p meow-proxy --feature-powerset
+
+      - name: Feature powerset — meow-listener
+        run: cargo hack check -p meow-listener --feature-powerset
+
+  msrv:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read MSRV from workspace Cargo.toml
+        id: msrv
+        run: |
+          msrv=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+          echo "MSRV: $msrv"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: msrv-${{ steps.msrv.outputs.version }}
+
+      - name: Cargo check on MSRV toolchain
+        run: cargo check --workspace --all-targets
+
+  macos:
+    runs-on: macos-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: macos
+
+      - name: Build
+        run: cargo build --tests
+
+      - name: Core smoke tests
+        run: |
+          cargo test --lib
+          cargo test --test common_test -- --nocapture
+          cargo test --test config_test -- --nocapture
+          cargo test --test rules_test -- --nocapture
+          cargo test --test api_test -- --nocapture
+          cargo test --test trojan_integration -- --nocapture
+          cargo test -p meow-dns --lib -- --nocapture
+          cargo test -p meow-transport --test tls_test -- --nocapture
+          cargo test -p meow-transport --test ws_test -- --nocapture
+
+  tproxy:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: TProxy integration tests
+        run: bash tests/test_tproxy_qemu.sh
