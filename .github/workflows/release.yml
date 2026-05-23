@@ -127,6 +127,5 @@ jobs:
         with:
           files: |
             dist/*.tar.gz
-            dist/*.tar.gz.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
