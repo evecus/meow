@@ -58,7 +58,7 @@ jobs:
       - name: Build minimal release binary (stripped, for size check)
         if: matrix.minimal_budget_bytes != 0
         run: |
-          cargo zigbuild --release --locked \
+          cargo zigbuild --release \
             --no-default-features --features minimal \
             --target ${{ matrix.target }} \
             --bin meow
